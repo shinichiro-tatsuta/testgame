@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>たつたのテストゲーム</title>
+  <style>
+    body { margin: 0; background: #111; }
+    h1 { text-align: center; color: #fff; font-family: sans-serif; margin-bottom: 0; }
+    #info { text-align: center; color: #fff; font-family: sans-serif; margin-top: 5px; }
+    canvas { background: #000; display: block; margin: 10px auto; }
+  </style>
+</head>
+<body>
+  <h1>たつたのテストゲーム</h1>
+  <div id="info">
+    <span id="health">HP: 3</span> | 
+    <span id="kills">倒した数: 0</span> | 
+    <span id="stage">Stage: 1</span>
+  </div>
+  <canvas id="gameCanvas" width="400" height="600"></canvas>
+  <script>
+    // キャンバス設定
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    const infoHealth = document.getElementById("health");
+    const infoKills = document.getElementById("kills");
+    const infoStage = document.getElementById("stage");
+    const canvasWidth = canvas.width;
+    const canvasHeight = canvas.height;
+
+    // ゲーム状態
+    let gameOver = false;
+    let enemyKillCount = 0;
+    let stage = 1;
+    let bossActive = false;
+    // ステージ状態："start"（開始演出）、"playing"（通常）、"clear"（クリア演出）
+    let stageState = "start";
+    let stageTimer = Date.now();
+
+    // パワーアップ関連：アイテムは「Pow」と表示、取得で30秒間パワーアップ（3方向発射）
+    let powerUpActive = false;
+    let powerUpStartTime = 0;
+    let powerUpItem = null;
+
+    // プレイヤー設定（自機は上部が尖った三角形：飛行機風）
+    const player = {
+      x: canvasWidth / 2 - 15,
+      y: canvasHeight - 60,
+      width: 30,
+      height: 30,
+      speed: 5,
+      health: 3,
+      lastShotTime: 0,
+      shotInterval: 300,
+      bullets: []  // 自機の弾
+    };
+
+    // 敵と敵弾
+    let enemyList = [];
+    let enemyBullets = [];
+
+    // ボスオブジェクト（存在する場合のみ）
+    let boss = null;
+
+    // 敵タイプ（5種類）：各タイプごとに色・サイズを指定
+    const enemyTypes = [
+      { type: 0, color: "#e74c3c", width: 40, height: 40 },
+      { type: 1, color: "#3498db", width: 40, height: 40 },
+      { type: 2, color: "#2ecc71", width: 42, height: 42 },
+      { type: 3, color: "#9b59b6", width: 38, height: 38 },
+      { type: 4, color: "#f39c12", width: 40, height: 40 }
+    ];
+
+    // 敵の基本速度（ステージクリアごとに5%アップ）
+    let enemyBaseSpeed = 2;
+    let lastEnemySpawn = Date.now();
+    let enemySpawnInterval = 1000;
+
+    // キー入力管理
+    const keys = {};
+    window.addEventListener("keydown", e => { keys[e.key] = true; });
+    window.addEventListener("keyup", e => { keys[e.key] = false; });
+
+    // 衝突判定（矩形ベース）
+    function isColliding(a, b) {
+      return a.x < b.x + b.width &&
+             a.x + a.width > b.x &&
+             a.y < b.y + b.height &&
+             a.y + a.height > b.y;
+    }
+
+    // パワーアップアイテム出現（画面上部から落下）
+    function spawnItem() {
+      powerUpItem = {
+        x: Math.random() * (canvasWidth - 40),
+        y: -30,
+        width: 40,
+        height: 30
+      };
+    }
+
+    // 自機の弾発射（パワーアップ中は左右斜めも追加）
+    function shootPlayerBullet() {
+      const now = Date.now();
+      if (now - player.lastShotTime < player.shotInterval) return;
+      player.lastShotTime = now;
+      if (powerUpActive) {
+        // 3方向発射
+        player.bullets.push({
+          x: player.x + player.width/2 - 3,
+          y: player.y,
+          width: 6,
+          height: 10,
+          speedX: 0,
+          speedY: 7
+        });
+        player.bullets.push({
+          x: player.x + player.width/2 - 3,
+          y: player.y,
+          width: 6,
+          height: 10,
+          speedX: -2,
+          speedY: 7
+        });
+        player.bullets.push({
+          x: player.x + player.width/2 - 3,
+          y: player.y,
+          width: 6,
+          height: 10,
+          speedX: 2,
+          speedY: 7
+        });
+      } else {
+        player.bullets.push({
+          x: player.x + player.width/2 - 3,
+          y: player.y,
+          width: 6,
+          height: 10,
+          speedX: 0,
+          speedY: 7
+        });
+      }
+    }
+
+    // 敵生成（ボス出現中は生成しない）
+    function spawnEnemy() {
+      if (bossActive) return;
+      const enemyDef = enemyTypes[Math.floor(Math.random() * enemyTypes.length)];
+      const enemy = {
+        type: enemyDef.type,
+        x: Math.random() * (canvasWidth - enemyDef.width),
+        y: -40,
+        width: enemyDef.width,
+        height: enemyDef.height,
+        color: enemyDef.color,
+        speed: enemyBaseSpeed * stage,
+        lastShotTime: Date.now(),
+        shotInterval: 1500 + Math.random()*1000
+      };
+      enemyList.push(enemy);
+    }
+
+    // 敵の射撃パターン（タイプごとに異なる）
+    function enemyShoot(enemy) {
+      const now = Date.now();
+      if (now - enemy.lastShotTime < enemy.shotInterval) return;
+      enemy.lastShotTime = now;
+      switch(enemy.type) {
+        case 0:
+          enemyBullets.push({
+            x: enemy.x + enemy.width/2 - 3,
+            y: enemy.y + enemy.height,
+            width: 6,
+            height: 10,
+            speedX: 0,
+            speedY: 3 + stage,
+            color: enemy.color
+          });
+          break;
+        case 1:
+          enemyBullets.push({
+            x: enemy.x + enemy.width/2 - 3,
+            y: enemy.y + enemy.height,
+            width: 6,
+            height: 10,
+            speedX: -1.5,
+            speedY: 3 + stage,
+            color: enemy.color
+          });
+          enemyBullets.push({
+            x: enemy.x + enemy.width/2 - 3,
+            y: enemy.y + enemy.height,
+            width: 6,
+            height: 10,
+            speedX: 1.5,
+            speedY: 3 + stage,
+            color: enemy.color
+          });
+          break;
+        case 2:
+          for(let angle = -20; angle <= 20; angle += 20) {
+            const rad = angle * Math.PI / 180;
+            enemyBullets.push({
+              x: enemy.x + enemy.width/2 - 3,
+              y: enemy.y + enemy.height,
+              width: 6,
+              height: 10,
+              speedX: Math.sin(rad)*2,
+              speedY: 3 + stage,
+              color: enemy.color
+            });
+          }
+          break;
+        case 3:
+          const dx = (player.x + player.width/2) - (enemy.x + enemy.width/2);
+          const dy = (player.y + player.height/2) - (enemy.y + enemy.height/2);
+          const dist = Math.hypot(dx, dy);
+          enemyBullets.push({
+            x: enemy.x + enemy.width/2 - 3,
+            y: enemy.y + enemy.height,
+            width: 6,
+            height: 10,
+            speedX: (dx/dist)*3,
+            speedY: (dy/dist)*3,
+            color: enemy.color
+          });
+          break;
+        case 4:
+          const angles = [0, 90, 180, 270];
+          angles.forEach(angle => {
+            const rad = angle * Math.PI / 180;
+            enemyBullets.push({
+              x: enemy.x + enemy.width/2 - 3,
+              y: enemy.y + enemy.height/2 - 3,
+              width: 6,
+              height: 6,
+              speedX: Math.cos(rad)*2,
+              speedY: Math.sin(rad)*2,
+              color: enemy.color
+            });
+          });
+          break;
+      }
+    }
+
+    // ボス生成（敵撃破数20体で出現）
+    function spawnBoss() {
+      bossActive = true;
+      boss = {
+        x: canvasWidth/2 - 50,
+        y: 30,
+        width: 100,
+        height: 60,
+        health: 50,
+        speed: 1.5 * stage,
+        direction: 1,
+        lastShotTime: Date.now(),
+        shotInterval: 1000,
+        patternIndex: 0,
+        patternSwitchTime: Date.now()
+      };
+    }
+
+    // ボスの射撃パターン（3種類をローテーション）
+    function bossShoot() {
+      if (!boss) return;
+      const now = Date.now();
+      if(now - boss.patternSwitchTime > 2000) {
+        boss.patternIndex = (boss.patternIndex + 1) % 3;
+        boss.patternSwitchTime = now;
+      }
+      if(now - boss.lastShotTime < boss.shotInterval) return;
+      boss.lastShotTime = now;
+      const centerX = boss.x + boss.width/2;
+      const centerY = boss.y + boss.height/2;
+      switch(boss.patternIndex) {
+        case 0:
+          for(let angle = 0; angle < 360; angle += 45) {
+            const rad = angle * Math.PI / 180;
+            enemyBullets.push({
+              x: centerX - 3,
+              y: centerY - 3,
+              width: 6,
+              height: 6,
+              speedX: Math.cos(rad)*3,
+              speedY: Math.sin(rad)*3,
+              color: "#fff"
+            });
+          }
+          break;
+        case 1:
+          for(let angle = -30; angle <= 30; angle += 15) {
+            const rad = angle * Math.PI / 180;
+            enemyBullets.push({
+              x: centerX - 3,
+              y: centerY - 3,
+              width: 6,
+              height: 6,
+              speedX: Math.sin(rad)*2,
+              speedY: 3,
+              color: "#fff"
+            });
+          }
+          break;
+        case 2:
+          const dx = (player.x + player.width/2) - centerX;
+          const dy = (player.y + player.height/2) - centerY;
+          const dist = Math.hypot(dx, dy);
+          enemyBullets.push({
+            x: centerX - 3,
+            y: centerY - 3,
+            width: 6,
+            height: 6,
+            speedX: (dx/dist)*3,
+            speedY: (dy/dist)*3,
+            color: "#fff"
+          });
+          break;
+      }
+    }
+
+    // ★描画関数群★
+
+    // 自機は上を尖らせた三角形（従来通り）
+    function drawPlayer() {
+      ctx.fillStyle = "#fff";
+      ctx.beginPath();
+      ctx.moveTo(player.x + player.width/2, player.y);
+      ctx.lineTo(player.x, player.y + player.height);
+      ctx.lineTo(player.x + player.width, player.y + player.height);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // 敵の描画：各タイプごとにコードで「敵らしい」シルエットを描画
+    function drawEnemy(enemy) {
+      ctx.save();
+      ctx.translate(enemy.x + enemy.width/2, enemy.y + enemy.height/2);
+      ctx.fillStyle = enemy.color;
+      switch(enemy.type) {
+        case 0:
+          // 三角形＋左右ウィング
+          ctx.beginPath();
+          ctx.moveTo(0, -enemy.height/2);
+          ctx.lineTo(-enemy.width/2, enemy.height/2);
+          ctx.lineTo(enemy.width/2, enemy.height/2);
+          ctx.closePath();
+          ctx.fill();
+          // 左ウィング
+          ctx.fillStyle = shadeColor(enemy.color, -20);
+          ctx.beginPath();
+          ctx.moveTo(-enemy.width/2, enemy.height/2);
+          ctx.lineTo(-enemy.width/2 - 5, enemy.height/2 + 5);
+          ctx.lineTo(-enemy.width/2, enemy.height/2 - 5);
+          ctx.fill();
+          // 右ウィング
+          ctx.beginPath();
+          ctx.moveTo(enemy.width/2, enemy.height/2);
+          ctx.lineTo(enemy.width/2 + 5, enemy.height/2 + 5);
+          ctx.lineTo(enemy.width/2, enemy.height/2 - 5);
+          ctx.fill();
+          break;
+        case 1:
+          // ドーム型
+          ctx.beginPath();
+          ctx.arc(0, 0, enemy.width/2, 0, Math.PI, true);
+          ctx.lineTo(-enemy.width/2, enemy.height/2);
+          ctx.lineTo(enemy.width/2, enemy.height/2);
+          ctx.closePath();
+          ctx.fill();
+          // 窓
+          ctx.fillStyle = "#fff";
+          ctx.beginPath();
+          ctx.arc(0, -enemy.width/8, enemy.width/6, 0, Math.PI*2);
+          ctx.fill();
+          break;
+        case 2:
+          // 矩形＋下部エンジン
+          ctx.beginPath();
+          ctx.rect(-enemy.width/2, -enemy.height/2, enemy.width, enemy.height);
+          ctx.fill();
+          ctx.fillStyle = "#000";
+          ctx.fillRect(-enemy.width/2 + 3, enemy.height/4, enemy.width - 6, enemy.height/4);
+          break;
+        case 3:
+          // 台形＋中央ライン
+          ctx.beginPath();
+          ctx.moveTo(-enemy.width/2, enemy.height/2);
+          ctx.lineTo(-enemy.width/4, -enemy.height/2);
+          ctx.lineTo(enemy.width/4, -enemy.height/2);
+          ctx.lineTo(enemy.width/2, enemy.height/2);
+          ctx.closePath();
+          ctx.fill();
+          ctx.strokeStyle = "#000";
+          ctx.beginPath();
+          ctx.moveTo(0, -enemy.height/2);
+          ctx.lineTo(0, enemy.height/2);
+          ctx.stroke();
+          break;
+        case 4:
+          // 未来的な曲線
+          ctx.beginPath();
+          ctx.moveTo(-enemy.width/2, 0);
+          ctx.quadraticCurveTo(0, -enemy.height/2, enemy.width/2, 0);
+          ctx.quadraticCurveTo(0, enemy.height/2, -enemy.width/2, 0);
+          ctx.closePath();
+          ctx.fill();
+          break;
+      }
+      ctx.restore();
+    }
+
+    // ボスの描画：大型宇宙船風に多角形と砲台を描画
+    function drawBoss(boss) {
+      ctx.save();
+      ctx.translate(boss.x + boss.width/2, boss.y + boss.height/2);
+      // 本体：六角形
+      ctx.fillStyle = "#fff";
+      let sides = 6;
+      let radius = Math.min(boss.width, boss.height)/2;
+      ctx.beginPath();
+      for(let i = 0; i < sides; i++){
+        let angle = (Math.PI*2/sides)*i - Math.PI/2;
+        let x = radius * Math.cos(angle);
+        let y = radius * Math.sin(angle);
+        if(i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fill();
+      // 砲台
+      ctx.fillStyle = "#e74c3c";
+      ctx.beginPath();
+      ctx.arc(-radius/2, 0, radius/6, 0, Math.PI*2);
+      ctx.arc(radius/2, 0, radius/6, 0, Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+      // ヘルスバー
+      ctx.fillStyle = "#e74c3c";
+      const hpBarWidth = boss.width * (boss.health/50);
+      ctx.fillRect(boss.x, boss.y - 10, hpBarWidth, 5);
+    }
+
+    // パワーアップアイテムは「Pow」と文字で表示
+    function drawItem(item) {
+      ctx.fillStyle = "#ffd700";
+      ctx.font = "16px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("Pow", item.x + item.width/2, item.y + item.height/2 + 6);
+    }
+
+    // 色を暗くする補助関数（16進カラー対応）
+    function shadeColor(color, percent) {
+      let num = parseInt(color.slice(1),16),
+          amt = Math.round(2.55 * percent),
+          R = (num >> 16) + amt,
+          G = (num >> 8 & 0x00FF) + amt,
+          B = (num & 0x0000FF) + amt;
+      return "#" + (
+        0x1000000 +
+        (R < 255 ? (R < 0 ? 0 : R) : 255) * 0x10000 +
+        (G < 255 ? (G < 0 ? 0 : G) : 255) * 0x100 +
+        (B < 255 ? (B < 0 ? 0 : B) : 255)
+      ).toString(16).slice(1);
+    }
+
+    // ★更新処理★
+    function update() {
+      if(gameOver) return;
+
+      // ステージ開始演出中は更新停止
+      if(stageState === "start") {
+        if(Date.now() - stageTimer > 3000) {
+          stageState = "playing";
+          enemyList = [];
+          enemyBullets = [];
+          boss = null;
+          enemyKillCount = 0;
+          spawnItem();
+        }
+        return;
+      }
+      // ステージクリア演出中は更新停止（※ここで bossActive をリセット）
+      if(stageState === "clear") {
+        if(Date.now() - stageTimer > 3000) {
+          stageState = "start";
+          stageTimer = Date.now();
+          enemyList = [];
+          enemyBullets = [];
+          boss = null;
+          bossActive = false; // ここでリセットすることで次のステージでも敵が生成されます
+          enemyKillCount = 0;
+          spawnItem();
+        }
+        return;
+      }
+
+      // 自機移動
+      if(keys["ArrowLeft"] && player.x > 0) { player.x -= player.speed; }
+      if(keys["ArrowRight"] && player.x + player.width < canvasWidth) { player.x += player.speed; }
+      if(keys["ArrowUp"] && player.y > 0) { player.y -= player.speed; }
+      if(keys["ArrowDown"] && player.y + player.height < canvasHeight) { player.y += player.speed; }
+      if(keys[" "]) { shootPlayerBullet(); }
+
+      // 自機弾更新
+      for(let i = player.bullets.length - 1; i >= 0; i--) {
+        const b = player.bullets[i];
+        b.x += b.speedX || 0;
+        b.y -= b.speedY;
+        if(b.y + b.height < 0) { player.bullets.splice(i, 1); }
+      }
+
+      // 敵生成（ボス出現中は生成せず）
+      if(!bossActive && Date.now() - lastEnemySpawn > enemySpawnInterval) {
+        spawnEnemy();
+        lastEnemySpawn = Date.now();
+      }
+
+      // 敵更新＆射撃
+      enemyList.forEach((enemy, index) => {
+        enemy.y += enemy.speed;
+        enemyShoot(enemy);
+        if(enemy.y > canvasHeight) { enemyList.splice(index, 1); }
+      });
+
+      // 敵弾更新
+      for(let i = enemyBullets.length - 1; i >= 0; i--) {
+        const eb = enemyBullets[i];
+        eb.x += eb.speedX;
+        eb.y += eb.speedY;
+        if(eb.x < -10 || eb.x > canvasWidth+10 || eb.y < -10 || eb.y > canvasHeight+10) {
+          enemyBullets.splice(i, 1);
+        }
+      }
+
+      // ボス更新
+      if(bossActive && boss) {
+        boss.x += boss.speed * boss.direction;
+        if(boss.x < 0 || boss.x + boss.width > canvasWidth) { boss.direction *= -1; }
+        bossShoot();
+      }
+
+      // パワーアップアイテム更新（落下）
+      if(powerUpItem) {
+        powerUpItem.y += 1;
+        if(powerUpItem.y > canvasHeight) { powerUpItem = null; }
+        if(isColliding(player, powerUpItem)) {
+          powerUpActive = true;
+          powerUpStartTime = Date.now();
+          powerUpItem = null;
+        }
+      }
+      // パワーアップ効果は30秒
+      if(powerUpActive && Date.now() - powerUpStartTime > 30000) { powerUpActive = false; }
+
+      // 自機弾 vs 敵衝突
+      for(let i = enemyList.length - 1; i >= 0; i--) {
+        const enemy = enemyList[i];
+        for(let j = player.bullets.length - 1; j >= 0; j--) {
+          const b = player.bullets[j];
+          if(isColliding(b, enemy)) {
+            enemyList.splice(i, 1);
+            player.bullets.splice(j, 1);
+            enemyKillCount++;
+            break;
+          }
+        }
+      }
+
+      // 自機弾 vs ボス衝突
+      if(bossActive && boss) {
+        for(let j = player.bullets.length - 1; j >= 0; j--) {
+          const b = player.bullets[j];
+          if(isColliding(b, boss)) {
+            boss.health--;
+            player.bullets.splice(j, 1);
+            if(boss.health <= 0) {
+              bossActive = false;
+              boss = null;
+              stageState = "clear";
+              stageTimer = Date.now();
+              stage++;
+              enemyBaseSpeed *= 1.05;
+            }
+            break;
+          }
+        }
+      }
+
+      // 敵弾 vs 自機衝突
+      for(let i = enemyBullets.length - 1; i >= 0; i--) {
+        const eb = enemyBullets[i];
+        if(isColliding(eb, player)) {
+          enemyBullets.splice(i, 1);
+          player.health--;
+          if(player.health <= 0) { gameOver = true; }
+        }
+      }
+
+      // 20体倒すとボス出現
+      if(!bossActive && enemyKillCount >= 20) { spawnBoss(); }
+
+      // UI更新
+      infoHealth.textContent = "HP: " + player.health;
+      infoKills.textContent = "倒した数: " + enemyKillCount;
+      infoStage.textContent = "Stage: " + stage;
+    }
+
+    // ★描画処理★
+    function draw() {
+      ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+
+      // ステージ開始・クリア演出
+      if(stageState === "start") {
+        ctx.fillStyle = "#fff";
+        ctx.font = "40px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("Stage " + stage, canvasWidth/2, canvasHeight/2);
+      }
+      if(stageState === "clear") {
+        ctx.fillStyle = "#fff";
+        ctx.font = "40px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("STAGE CLEAR!", canvasWidth/2, canvasHeight/2);
+      }
+
+      // パワーアップアイテム描画
+      if(powerUpItem) { drawItem(powerUpItem); }
+
+      // 自機描画
+      drawPlayer();
+
+      // 自機弾描画
+      ctx.fillStyle = "#ff0";
+      player.bullets.forEach(b => { ctx.fillRect(b.x, b.y, b.width, b.height); });
+
+      // 敵描画
+      enemyList.forEach(enemy => { drawEnemy(enemy); });
+
+      // 敵弾描画
+      enemyBullets.forEach(eb => {
+        ctx.fillStyle = eb.color;
+        ctx.fillRect(eb.x, eb.y, eb.width, eb.height);
+      });
+
+      // ボス描画
+      if(bossActive && boss) { drawBoss(boss); }
+
+      // ゲームオーバー表示
+      if(gameOver) {
+        ctx.fillStyle = "rgba(0,0,0,0.7)";
+        ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+        ctx.fillStyle = "#fff";
+        ctx.font = "30px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("GAME OVER", canvasWidth/2, canvasHeight/2);
+      }
+    }
+
+    // メインループ
+    function gameLoop() {
+      update();
+      draw();
+      requestAnimationFrame(gameLoop);
+    }
+    gameLoop();
+  </script>
+</body>
+</html>
